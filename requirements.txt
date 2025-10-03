@@ -1,0 +1,11 @@
+pyqt6
+pyqt6-webengine
+yfinance
+plotly
+pandas
+numpy
+sqlalchemy
+torch
+stable-baselines3
+gym
+vectorbt
