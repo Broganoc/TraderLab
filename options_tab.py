@@ -1,14 +1,17 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QMessageBox, QCheckBox, QLineEdit
+    QTableWidget, QTableWidgetItem, QMessageBox, QCheckBox, QLineEdit,
+    QSlider
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QEvent
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
 from scipy.stats import norm
-
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas  # Use QtAgg for PyQt6 compatibility
+import matplotlib.pyplot as plt
+import gc
 
 class OptionsTab(QWidget):
     def __init__(self, parent=None):
@@ -18,6 +21,7 @@ class OptionsTab(QWidget):
         self.underlying_price = None
         self.risk_free_rate = None
         self.dividend_yield = None
+        self.payoff_window = None  # For reusing payoff window
 
         # --- Layout ---
         main_layout = QVBoxLayout()
@@ -111,11 +115,13 @@ class OptionsTab(QWidget):
             if not exps:
                 QMessageBox.warning(self, "No Options Data",
                                     f"No options data available for {ticker}")
+                stock.session.close()
                 return
 
             self.expiration_box.addItems(exps)
             self.current_ticker = ticker
             self.update_ticker_info(stock)
+            stock.session.close()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load expirations: {e}")
@@ -152,6 +158,7 @@ class OptionsTab(QWidget):
             QMessageBox.warning(self, "No Expiration", "Please select an expiration date.")
             return
 
+        df = None
         try:
             stock = yf.Ticker(self.current_ticker)
             chain = stock.option_chain(exp)
@@ -224,6 +231,12 @@ class OptionsTab(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load options chain: {e}")
+        finally:
+            if df is not None:
+                del df
+            if 'stock' in locals():
+                stock.session.close()
+            gc.collect()
 
     def calculate_delta(self, K, S, r, q, sigma, t, option_type):
         if sigma <= 0 or t <= 0 or S <= 0:
@@ -306,5 +319,116 @@ class OptionsTab(QWidget):
         self.payoff_btn.setEnabled(bool(self.table.selectedItems()))
 
     def show_payoff_diagram(self):
-        # This method is overridden in MainWindow to pass the chart to ChartsTab
-        pass
+        """Note: This method is overridden in MainWindow to use Chart.js. This is the local matplotlib version."""
+        if not self.table.selectedItems():
+            QMessageBox.warning(self, "No Selection", "Please select at least one option.")
+            return
+
+        # Collect selected rows
+        selected_rows = set(item.row() for item in self.table.selectedItems())
+        strikes, premiums, types = [], [], []
+
+        for row in selected_rows:
+            strike_item = self.table.item(row, 1)  # Strike column
+            type_item = self.table.item(row, 0)  # Call/Put
+            premium_item = None
+
+            # Find premium column
+            for col in range(self.table.columnCount()):
+                header = self.table.horizontalHeaderItem(col).text().lower()
+                if "last price" in header:
+                    premium_item = self.table.item(row, col)
+                    break
+
+            if not (strike_item and premium_item and type_item):
+                continue
+
+            strike = float(strike_item.text())
+            premium = float(premium_item.text())
+            opt_type = type_item.text()
+
+            strikes.append(strike)
+            premiums.append(premium)
+            types.append(opt_type)
+
+        if not strikes:
+            QMessageBox.warning(self, "Error", "Could not extract strikes and premiums.")
+            return
+
+        # Store data for reuse when slider moves
+        self._payoff_data = (strikes, premiums, types)
+        self._spot_price = self.underlying_price or 100
+
+        # Create or reuse payoff window
+        if self.payoff_window is None:
+            self.payoff_window = QWidget()
+            self.payoff_window.closeEvent = self.close_payoff_window  # Custom close handler
+            layout = QVBoxLayout(self.payoff_window)
+
+            # Slider label
+            self.slider_label = QLabel("Premium Multiplier: 1.0x")
+            layout.addWidget(self.slider_label)
+
+            # Slider (50% to 200% premium)
+            self.slider = QSlider(Qt.Orientation.Horizontal)
+            self.slider.setMinimum(50)
+            self.slider.setMaximum(200)
+            self.slider.setValue(100)  # start at 1.0x
+            self.slider.valueChanged.connect(self.update_payoff_diagram)
+            layout.addWidget(self.slider)
+
+            # Matplotlib figure
+            self.fig, self.ax = plt.subplots(figsize=(8, 5))
+            self.canvas = FigureCanvas(self.fig)
+            layout.addWidget(self.canvas)
+
+            self.payoff_window.setWindowTitle("Options Payoff Diagram")
+            self.payoff_window.resize(900, 700)
+        self.payoff_window.show()
+        self.update_payoff_diagram()
+
+    def update_payoff_diagram(self):
+        """Update the payoff diagram based on slider value."""
+        if not hasattr(self, '_payoff_data'):
+            return
+        strikes, premiums, types = self._payoff_data
+        multiplier = self.slider.value() / 100.0
+        self.slider_label.setText(f"Premium Multiplier: {multiplier:.2f}x")
+
+        self.ax.clear()  # Clear previous plot
+        spot_range = np.linspace(max(0, min(strikes) - 50), max(strikes) + 50, 100)
+        total_payoff = np.zeros_like(spot_range)
+
+        for strike, premium, opt_type in zip(strikes, premiums, types):
+            premium_adj = premium * multiplier
+            if opt_type == "Call":
+                payoff = np.maximum(0, spot_range - strike) - premium_adj
+            else:
+                payoff = np.maximum(0, strike - spot_range) - premium_adj
+            total_payoff += payoff
+            self.ax.plot(spot_range, payoff, label=f"{opt_type} (Strike: {strike}, Premium: {premium_adj:.2f})")
+
+        self.ax.plot(spot_range, total_payoff, label="Total Payoff", linewidth=2, color='black')
+        self.ax.axhline(0, color='gray', linestyle='--')
+        self.ax.axvline(self._spot_price, color='red', linestyle='--', label='Spot Price')
+        self.ax.set_xlabel("Underlying Price")
+        self.ax.set_ylabel("Payoff")
+        self.ax.set_title("Options Payoff Diagram")
+        self.ax.legend()
+        self.ax.grid(True)
+        self.canvas.draw()
+
+    def close_payoff_window(self, event: QEvent):
+        """Clean up payoff window resources."""
+        if self.payoff_window:
+            try:
+                self.slider.valueChanged.disconnect()
+            except:
+                pass  # Ignore if not connected
+            plt.close(self.fig)  # Close matplotlib figure
+            if hasattr(self, 'canvas'):
+                self.canvas.deleteLater()  # Delete canvas
+            self.payoff_window = None  # Clear reference
+            del self._payoff_data
+            gc.collect()
+        event.accept()

@@ -2,16 +2,24 @@
 import yfinance as yf
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+import gc
+
 
 def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
     """
-    Builds a chart with multiple stacked plots (Candlestick, Line, RSI, MACD, Bollinger Bands)
+    Builds a chart with multiple stacked plots (Candlestick, Line, RSI, MACD, Bollinger Bands).
+    Limits data size to prevent excessive memory usage.
     """
     stock = yf.Ticker(ticker)
     df = stock.history(period=period, interval=interval)
 
     if df.empty:
+        stock.session.close()
         return "<h3>No data available for this ticker/interval/period.</h3>"
+
+    # Downsample if too large to reduce memory usage
+    if len(df) > 1000:  # Adjust threshold as needed
+        df = df.iloc[::2]  # Take every other row
 
     n_rows = len(plots)
     fig = make_subplots(
@@ -42,7 +50,6 @@ def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
                 marker=dict(color="rgba(100,100,200,0.5)")
             ), row=row, col=1)
 
-
         elif plot_type == "Line":
             fig.add_trace(go.Scatter(
                 x=df.index, y=df['Close'], mode='lines', name="Close"
@@ -59,7 +66,7 @@ def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
             fig.add_trace(go.Scatter(
                 x=df.index, y=rsi, mode='lines', name="RSI"
             ), row=row, col=1)
-            fig.update_yaxes(range=[0,100], row=row, col=1)
+            fig.update_yaxes(range=[0, 100], row=row, col=1)
 
         elif plot_type == "MACD":
             ema12 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -72,11 +79,20 @@ def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
         elif plot_type == "Bollinger Bands":
             sma20 = df['Close'].rolling(20).mean()
             std20 = df['Close'].rolling(20).std()
-            upper = sma20 + 2*std20
-            lower = sma20 - 2*std20
+            upper = sma20 + 2 * std20
+            lower = sma20 - 2 * std20
             fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name="Close"), row=row, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=upper, mode='lines', name="Upper Band", line=dict(dash='dot')), row=row, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=lower, mode='lines', name="Lower Band", line=dict(dash='dot')), row=row, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=upper, mode='lines', name="Upper Band", line=dict(dash='dot')),
+                          row=row, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=lower, mode='lines', name="Lower Band", line=dict(dash='dot')),
+                          row=row, col=1)
 
-    fig.update_layout(template="plotly_dark", height=300*n_rows)
-    return fig.to_html(include_plotlyjs="cdn")
+    fig.update_layout(template="plotly_dark", height=300 * n_rows)
+    html = fig.to_html(include_plotlyjs="cdn")
+
+    # Cleanup
+    del df
+    stock.session.close()
+    gc.collect()
+
+    return html

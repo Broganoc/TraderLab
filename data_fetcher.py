@@ -1,23 +1,35 @@
 # data_fetcher.py
 import yfinance as yf
 import pandas as pd
+import gc
+
 
 def fetch_current_price(ticker: str) -> float:
+    """
+    Fetches current price (unused in current code, but kept for completeness).
+    """
     info = yf.download(tickers=ticker, period="1d", interval="1m")
     if info.empty:
         return None
-    return float(info['Close'].iloc[-1])
+    price = float(info['Close'].iloc[-1])
+    del info
+    gc.collect()
+    return price
 
-# data_fetcher.py
-import yfinance as yf
-import pandas as pd
 
 def fetch_historical(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     tk = yf.Ticker(ticker)
     df = tk.history(period=period, interval=interval, actions=False)
+
+    # Limit rows to prevent excessive memory usage
+    if len(df) > 1000:  # Adjust threshold as needed
+        df = df.iloc[-1000:]  # Keep only the last 1000 rows
+
     df = df.reset_index()
     df.rename(columns={'Date': 'datetime'}, inplace=True)
+    tk.session.close()  # Close HTTP session
     return df
+
 
 def fetch_summary(ticker: str) -> dict:
     tk = yf.Ticker(ticker)
@@ -37,6 +49,7 @@ def fetch_summary(ticker: str) -> dict:
         "52-Week Low": info.get("fiftyTwoWeekLow", "N/A"),
         "Website": info.get("website", "N/A"),
     }
+    tk.session.close()  # Close HTTP session
     return summary
 
 

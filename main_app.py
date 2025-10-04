@@ -5,11 +5,14 @@ from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QHBoxLayout, QComboBox
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtCore import QEvent
 from data_fetcher import fetch_historical, fetch_summary
 from chart_builder import get_chart_html
 from options_tab import OptionsTab  # Import OptionsTab
 import pandas as pd
 import numpy as np
+import gc
+import tracemalloc  # Optional for profiling
 
 class LookupTab(QWidget):
     def __init__(self, parent=None):
@@ -56,6 +59,8 @@ class LookupTab(QWidget):
         df = fetch_historical(tk, period="3mo", interval="1d")
         if df.empty:
             self.labels["Name"].setText("No data found")
+            del df
+            gc.collect()
             return
 
         # Update info card
@@ -68,6 +73,9 @@ class LookupTab(QWidget):
             self.parent_window.current_ticker = tk
             self.parent_window.charts_tab.load_chart()
             self.parent_window.options_tab.load_expirations(tk)  # Update OptionsTab
+
+        del df
+        gc.collect()
 
 class ChartsTab(QWidget):
     def __init__(self, parent=None):
@@ -130,6 +138,12 @@ class ChartsTab(QWidget):
         layout.addWidget(self.web)
         self.setLayout(layout)
 
+    def clear_web_view(self):
+        """Clear the QWebEngineView to release memory."""
+        self.web.page().deleteLater()
+        self.web.setPage(None)
+        self.web.setHtml("")
+
     def add_plot(self):
         plot_type = self.new_plot_box.currentText()
         if plot_type not in self.active_plots:
@@ -147,11 +161,13 @@ class ChartsTab(QWidget):
             self.web.setHtml("<h3>No ticker selected.</h3>")
             return
 
+        self.custom_chart_config = None  # Reset custom config
+        self.clear_web_view()  # Clear previous content
         interval = self.interval_box.currentText()
         period = self.period_box.currentText()
         html = get_chart_html(ticker, interval=interval, period=period, plots=self.active_plots)
         self.web.setHtml(html)
-        self.custom_chart_btn.setEnabled(bool(self.custom_chart_config))  # Update button state
+        self.custom_chart_btn.setEnabled(False)  # Disable until new config is set
 
     def set_custom_chart(self, chart_config):
         """Set a custom Chart.js config (e.g., from OptionsTab)."""
@@ -164,6 +180,7 @@ class ChartsTab(QWidget):
             self.web.setHtml("<h3>No custom chart available.</h3>")
             return
 
+        self.clear_web_view()  # Clear previous content
         # Create HTML to render the Chart.js chart
         html = f"""
         <!DOCTYPE html>
@@ -287,8 +304,43 @@ class MainWindow(QMainWindow):
         self.charts_tab.load_custom_chart()
         self.centralWidget().setCurrentWidget(self.charts_tab)
 
+    def closeEvent(self, event: QEvent):
+        """Clean up on application close."""
+        # Disconnect signals
+        try:
+            self.lookup_tab.ticker_input.returnPressed.disconnect()
+            self.charts_tab.add_plot_btn.clicked.disconnect()
+            self.charts_tab.remove_plot_btn.clicked.disconnect()
+            self.charts_tab.refresh_btn.clicked.disconnect()
+            self.charts_tab.custom_chart_btn.clicked.disconnect()
+            if hasattr(self.options_tab, 'payoff_window') and self.options_tab.payoff_window:
+                self.options_tab.payoff_window.close()
+        except:
+            pass  # Ignore if not connected
+
+        # Clear QWebEngineView
+        self.charts_tab.clear_web_view()
+
+        # Force garbage collection
+        gc.collect()
+        event.accept()
+
 if __name__ == "__main__":
+    # Optional: Start tracemalloc for profiling
+    # tracemalloc.start()
+
     app = QApplication(sys.argv)
     mw = MainWindow()
     mw.show()
-    sys.exit(app.exec())
+    try:
+        sys.exit(app.exec())
+    finally:
+        # Optional: Print top memory consumers
+        # snapshot = tracemalloc.take_snapshot()
+        # top_stats = snapshot.statistics('lineno')
+        # print("Top memory consumers:")
+        # for stat in top_stats[:10]:
+        #     print(stat)
+
+        app.deleteLater()  # Ensure QApplication is deleted
+        gc.collect()  # Force garbage collection
