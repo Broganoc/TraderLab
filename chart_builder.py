@@ -18,7 +18,7 @@ def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
         return "<h3>No data available for this ticker/interval/period.</h3>"
 
     # Downsample if too large to reduce memory usage
-    if len(df) > 1000:  # Adjust threshold as needed
+    if len(df) > 500:  # Stricter threshold
         df = df.iloc[::2]  # Take every other row
 
     n_rows = len(plots)
@@ -92,6 +92,7 @@ def get_chart_html(ticker, interval="1d", period="6mo", plots=["Candlestick"]):
 
     # Cleanup
     del df
+    del fig
     stock.session.close()
     gc.collect()
 
