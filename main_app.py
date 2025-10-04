@@ -113,6 +113,7 @@ class LookupTab(QWidget):
         try:
             price = float(price)
         except ValueError:
+
             QMessageBox.warning(self, "Error", f"Invalid price for {tk}.")
             return
 
