@@ -1,10 +1,9 @@
-# order_preview.py
 import logging
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel
 import datetime
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, filename='traderlab.log', filemode='w')
 logger = logging.getLogger(__name__)
 
 class OrderPreviewDialog(QDialog):
@@ -13,13 +12,14 @@ class OrderPreviewDialog(QDialog):
         logger.debug(f"Initializing OrderPreviewDialog for trade: {trade}")
         self.setWindowTitle("Order Preview")
         self.trade = trade
-        self.price = price
+        self.market_price = price
         self.bid = bid
         self.ask = ask
         self.vol = vol
         self.oi = oi
         self.is_option = is_option
         self.multiplier = 100 if is_option else 1
+        self.limit_price = None
 
         try:
             layout = QVBoxLayout()
@@ -39,6 +39,12 @@ class OrderPreviewDialog(QDialog):
             layout.addWidget(QLabel("Quantity:"))
             self.quantity_edit = QLineEdit(str(trade['quantity']))
             layout.addWidget(self.quantity_edit)
+
+            # Limit price edit
+            layout.addWidget(QLabel("Limit Price (optional, leave blank for market order):"))
+            self.limit_price_edit = QLineEdit()
+            self.limit_price_edit.setPlaceholderText(f"Market Price: ${price:.2f}")
+            layout.addWidget(self.limit_price_edit)
 
             # Price info
             self.price_label = QLabel(f"Estimated Price/Premium: ${price:.2f}")
@@ -78,6 +84,7 @@ class OrderPreviewDialog(QDialog):
 
             self.setLayout(layout)
             self.quantity_edit.textChanged.connect(self.update_total_cost)
+            self.limit_price_edit.textChanged.connect(self.update_total_cost)
             logger.debug("OrderPreviewDialog initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing OrderPreviewDialog: {e}")
@@ -88,11 +95,16 @@ class OrderPreviewDialog(QDialog):
             qty = int(self.quantity_edit.text())
             if qty <= 0:
                 raise ValueError("Quantity must be positive")
-            total = qty * self.multiplier * self.price
+            limit_price_text = self.limit_price_edit.text().strip()
+            price = float(limit_price_text) if limit_price_text else self.market_price
+            if limit_price_text and price <= 0:
+                raise ValueError("Limit price must be positive")
+            self.limit_price = price if limit_price_text else None
+            total = qty * self.multiplier * price
             self.total_cost_label.setText(f"Estimated Total Cost: ${total:,.2f}")
-            logger.debug(f"Updated total cost: ${total:,.2f}")
+            logger.debug(f"Updated total cost: ${total:,.2f} (using {'limit' if limit_price_text else 'market'} price: ${price:.2f})")
         except ValueError as e:
-            self.total_cost_label.setText("Invalid quantity")
+            self.total_cost_label.setText(f"Invalid input: {str(e)}")
             logger.error(f"Error updating total cost: {e}")
 
     def get_edited_trade(self):
@@ -101,6 +113,8 @@ class OrderPreviewDialog(QDialog):
             if qty <= 0:
                 raise ValueError("Quantity must be positive")
             self.trade['quantity'] = qty
+            if self.limit_price is not None:
+                self.trade['limit_price'] = self.limit_price
             logger.debug(f"Returning edited trade: {self.trade}")
             return self.trade
         except ValueError as e:

@@ -1,8 +1,7 @@
-# options_tab.py
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QTableWidget, QTableWidgetItem, QMessageBox, QCheckBox, QLineEdit,
-    QGroupBox, QDialog  # Added QDialog import
+    QGroupBox, QDialog
 )
 from PyQt6.QtCore import Qt
 import pandas as pd
@@ -15,7 +14,7 @@ from dateutil.parser import parse as parse_date
 from order_preview import OrderPreviewDialog
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, filename='traderlab.log', filemode='w')
 logger = logging.getLogger(__name__)
 
 class OptionsTab(QWidget):
@@ -280,7 +279,7 @@ class OptionsTab(QWidget):
                 logger.error(f"Error executing OrderPreviewDialog: {e}")
                 QMessageBox.critical(self, "Error", f"Failed to execute order preview: {e}")
             finally:
-                dialog.deleteLater()  # Ensure dialog is cleaned up
+                dialog.deleteLater()
                 gc.collect()
         except Exception as e:
             logger.error(f"Error in buy_option: {e}")

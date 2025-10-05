@@ -1,4 +1,3 @@
-# main_app.py
 import sys
 import datetime
 import numpy as np
@@ -6,7 +5,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QPushButton, QLineEdit, QLabel,
     QGridLayout, QGroupBox, QHBoxLayout, QComboBox,
-    QMessageBox, QDialog  # Added QDialog import
+    QMessageBox, QDialog
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import QTimer
@@ -142,7 +141,8 @@ class LookupTab(QWidget):
                     if edited_trade:
                         success = self.parent_window.order_handler.place_buy_order(edited_trade, self)
                         if success:
-                            QMessageBox.information(self, "Success", f"Bought {edited_trade['quantity']} shares of {tk} at ${edited_trade.get('buy_price', 0.0):.2f}.")
+                            price_key = 'buy_price' if edited_trade.get('type') == 'stock' else 'buy_premium'
+                            QMessageBox.information(self, "Success", f"Bought {edited_trade['quantity']} shares of {tk} at ${edited_trade.get(price_key, 0.0):.2f}.")
                             self.parent_window.trade_simulator_tab.load_portfolio()
                             logger.info(f"Successfully bought {edited_trade['quantity']} shares of {tk}")
                         else:
@@ -155,7 +155,7 @@ class LookupTab(QWidget):
                 logger.error(f"Error executing OrderPreviewDialog: {e}")
                 QMessageBox.critical(self, "Error", f"Failed to execute order preview: {e}")
             finally:
-                dialog.deleteLater()  # Ensure dialog is cleaned up
+                dialog.deleteLater()
                 gc.collect()
         except Exception as e:
             logger.error(f"Error in buy_stock: {e}")

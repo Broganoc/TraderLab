@@ -1,4 +1,3 @@
-# trade_simulator.py
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton,
     QHBoxLayout, QLabel, QMessageBox
@@ -14,7 +13,7 @@ import pandas as pd
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG, filename='traderlab.log', filemode='w')
 logger = logging.getLogger(__name__)
 
 
@@ -94,7 +93,7 @@ class OrderHandler:
                 gc.collect()
 
     def place_buy_order(self, trade, parent_widget=None):
-        """Place a buy order, checking market hours and liquidity."""
+        """Place a buy order, checking market hours, liquidity, and limit price."""
         logger.debug(f"Placing buy order: {trade}")
         if not self._is_market_open():
             QMessageBox.warning(parent_widget, "Market Closed",
@@ -104,6 +103,7 @@ class OrderHandler:
 
         ticker = trade.get("ticker", "")
         qty = trade.get("quantity", 0)
+        limit_price = trade.get("limit_price", None)
         is_option = 'strike' in trade and trade['strike'] is not None
 
         try:
@@ -119,6 +119,19 @@ class OrderHandler:
                                         f"Could not fetch valid current price for {ticker} option. Aborting.")
                     logger.error(f"Invalid option price for {ticker}")
                     return False
+
+                # Check limit price for buy order (price <= ask for buy)
+                if limit_price is not None:
+                    if limit_price <= 0:
+                        QMessageBox.warning(parent_widget, "Invalid Limit Price", "Limit price must be positive.")
+                        logger.error(f"Invalid limit price: {limit_price}")
+                        return False
+                    if ask > 0 and limit_price > ask:
+                        QMessageBox.warning(parent_widget, "Limit Price Too High",
+                                            f"Limit price (${limit_price:.2f}) exceeds current ask (${ask:.2f}). Cannot execute buy order.")
+                        logger.error(f"Limit price {limit_price:.2f} exceeds ask {ask:.2f} for {ticker} option")
+                        return False
+                    price = limit_price  # Use limit price if valid
 
                 low_liquidity = vol < 10 or oi < 50
                 if low_liquidity:
@@ -138,6 +151,19 @@ class OrderHandler:
                                         f"Could not fetch valid current price for {ticker} stock. Aborting.")
                     logger.error(f"Invalid stock price for {ticker}")
                     return False
+
+                # Check limit price for buy order (price <= ask for buy)
+                if limit_price is not None:
+                    if limit_price <= 0:
+                        QMessageBox.warning(parent_widget, "Invalid Limit Price", "Limit price must be positive.")
+                        logger.error(f"Invalid limit price: {limit_price}")
+                        return False
+                    if ask > 0 and limit_price > ask:
+                        QMessageBox.warning(parent_widget, "Limit Price Too High",
+                                            f"Limit price (${limit_price:.2f}) exceeds current ask (${ask:.2f}). Cannot execute buy order.")
+                        logger.error(f"Limit price {limit_price:.2f} exceeds ask {ask:.2f} for {ticker} stock")
+                        return False
+                    price = limit_price  # Use limit price if valid
 
             multiplier = 100 if is_option else 1
             cost = qty * multiplier * price
