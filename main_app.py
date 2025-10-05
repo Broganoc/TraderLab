@@ -6,16 +6,22 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget,
     QVBoxLayout, QPushButton, QLineEdit, QLabel,
     QGridLayout, QGroupBox, QHBoxLayout, QComboBox,
-    QMessageBox
+    QMessageBox, QDialog  # Added QDialog import
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import QTimer
 from data_fetcher import fetch_historical, fetch_summary
 from chart_builder import get_chart_html
 from options_tab import OptionsTab
-from trade_simulator import TradeSimulatorTab
+from trade_simulator import TradeSimulatorTab, OrderHandler
+from order_preview import OrderPreviewDialog
+import logging
+import gc
 
-# ----------------- Lookup Tab -----------------
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, filename='traderlab.log', filemode='w')
+logger = logging.getLogger(__name__)
+
 class LookupTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -87,60 +93,74 @@ class LookupTab(QWidget):
                 self.parent_window.current_ticker = tk
                 QTimer.singleShot(0, self.parent_window.charts_tab.load_chart)
                 self.parent_window.options_tab.load_expirations(tk)
+            logger.debug(f"Loaded ticker {tk}")
         except Exception as e:
+            logger.error(f"Failed to load ticker {tk}: {e}")
             QMessageBox.critical(self, "Error", f"Failed to load ticker {tk}: {e}")
 
     def buy_stock(self):
         tk = self.ticker_input.text().strip().upper()
+        logger.debug(f"Attempting to buy stock for ticker {tk}")
         if not tk:
             QMessageBox.warning(self, "Error", "Please enter a ticker symbol.")
+            logger.warning("No ticker symbol entered")
             return
 
         try:
             qty = int(self.quantity_edit.text())
             if qty <= 0:
                 raise ValueError("Quantity must be positive.")
-        except ValueError:
+        except ValueError as e:
             QMessageBox.warning(self, "Error", "Please enter a valid positive integer for quantity.")
-            return
-
-        summary = fetch_summary(tk)
-        price = summary.get("Current Price", None)
-        if not price or price == "N/A":
-            QMessageBox.warning(self, "Error", f"Could not fetch current price for {tk}.")
+            logger.error(f"Invalid quantity: {e}")
             return
 
         try:
-            price = float(price)
-        except ValueError:
+            # Fetch stock data for preview
+            price, bid, ask, vol = self.parent_window.order_handler._get_current_stock_data(tk)
+            logger.debug(f"Fetched stock data for {tk}: price=${price:.2f}, bid=${bid:.2f}, ask=${ask:.2f}, vol={vol}")
+            if price <= 0.0:
+                QMessageBox.warning(self, "Price Error", f"Could not fetch current price for {tk}.")
+                logger.error(f"Invalid price for {tk}: {price}")
+                return
 
-            QMessageBox.warning(self, "Error", f"Invalid price for {tk}.")
-            return
+            trade = {
+                'type': 'stock',
+                'ticker': tk,
+                'quantity': qty,
+                'buy_date': datetime.date.today()
+            }
 
-        total_cost = qty * price
-        trade_tab = self.parent_window.trade_simulator_tab
+            # Show preview dialog
+            logger.debug("Opening OrderPreviewDialog")
+            dialog = OrderPreviewDialog(self, trade, price, bid, ask, vol)
+            try:
+                result = dialog.exec()
+                logger.debug(f"OrderPreviewDialog result: {result}")
+                if result == QDialog.DialogCode.Accepted:
+                    edited_trade = dialog.get_edited_trade()
+                    if edited_trade:
+                        success = self.parent_window.order_handler.place_buy_order(edited_trade, self)
+                        if success:
+                            QMessageBox.information(self, "Success", f"Bought {edited_trade['quantity']} shares of {tk} at ${edited_trade.get('buy_price', 0.0):.2f}.")
+                            self.parent_window.trade_simulator_tab.load_portfolio()
+                            logger.info(f"Successfully bought {edited_trade['quantity']} shares of {tk}")
+                        else:
+                            logger.error("Order placement failed")
+                    else:
+                        logger.warning("No valid trade returned from OrderPreviewDialog")
+                else:
+                    logger.debug("Order preview cancelled")
+            except Exception as e:
+                logger.error(f"Error executing OrderPreviewDialog: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to execute order preview: {e}")
+            finally:
+                dialog.deleteLater()  # Ensure dialog is cleaned up
+                gc.collect()
+        except Exception as e:
+            logger.error(f"Error in buy_stock: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to place order: {e}")
 
-        if total_cost > trade_tab.cash_balance:
-            QMessageBox.warning(
-                self, "Insufficient Funds",
-                f"You need ${total_cost:,.2f} but only have ${trade_tab.cash_balance:,.2f}."
-            )
-            return
-
-        trade_tab.cash_balance -= total_cost
-        position = {
-            'type': 'stock',
-            'ticker': tk,
-            'quantity': qty,
-            'buy_price': price,
-            'buy_date': datetime.date.today()
-        }
-        self.parent_window.portfolio.append(position)
-        QMessageBox.information(self, "Success", f"Bought {qty} shares of {tk} at ${price:.2f}.")
-        trade_tab.load_portfolio()
-
-
-# ----------------- Charts Tab -----------------
 class ChartsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -199,7 +219,7 @@ class ChartsTab(QWidget):
             QTimer.singleShot(0, self.load_chart)
 
     def remove_last_plot(self):
-        if len(self.active_plots) > 0:
+        if len(self.active_plots) > 1:
             self.active_plots.pop()
             QTimer.singleShot(0, self.load_chart)
 
@@ -209,14 +229,19 @@ class ChartsTab(QWidget):
             self.web.setHtml("<h3>No ticker selected.</h3>")
             return
 
-        html = get_chart_html(
-            ticker,
-            interval=self.interval_box.currentText(),
-            period=self.period_box.currentText(),
-            plots=self.active_plots
-        )
-        QTimer.singleShot(0, lambda: self.web.setHtml(html))
-        self.custom_chart_btn.setEnabled(False)
+        try:
+            html = get_chart_html(
+                ticker,
+                interval=self.interval_box.currentText(),
+                period=self.period_box.currentText(),
+                plots=self.active_plots
+            )
+            QTimer.singleShot(0, lambda: self.web.setHtml(html))
+            self.custom_chart_btn.setEnabled(False)
+            logger.debug(f"Loaded chart for {ticker}")
+        except Exception as e:
+            logger.error(f"Error loading chart for {ticker}: {e}")
+            self.web.setHtml(f"<h3>Error loading chart: {str(e)}</h3>")
 
     def set_custom_chart(self, chart_config):
         self.custom_chart_config = chart_config
@@ -227,25 +252,28 @@ class ChartsTab(QWidget):
             self.web.setHtml("<h3>No custom chart available.</h3>")
             return
 
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        </head>
-        <body>
-            <canvas id="chart" style="width:100%; height:100%"></canvas>
-            <script>
-                const ctx = document.getElementById('chart').getContext('2d');
-                new Chart(ctx, {self.custom_chart_config});
-            </script>
-        </body>
-        </html>
-        """
-        QTimer.singleShot(0, lambda: self.web.setHtml(html))
+        try:
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            </head>
+            <body>
+                <canvas id="chart" style="width:100%; height:100%"></canvas>
+                <script>
+                    const ctx = document.getElementById('chart').getContext('2d');
+                    new Chart(ctx, {self.custom_chart_config});
+                </script>
+            </body>
+            </html>
+            """
+            QTimer.singleShot(0, lambda: self.web.setHtml(html))
+            logger.debug("Loaded custom chart")
+        except Exception as e:
+            logger.error(f"Error loading custom chart: {e}")
+            self.web.setHtml(f"<h3>Error loading custom chart: {str(e)}</h3>")
 
-
-# ----------------- Main Window -----------------
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -253,6 +281,8 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
         self.current_ticker = "AAPL"
         self.portfolio = []
+        self.cash_balance = 100000.0
+        self.order_handler = OrderHandler(self)
 
         self.setStyleSheet("""
             QLabel { font-size: 14px; }
@@ -274,11 +304,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.trade_simulator_tab, "Trade Simulator")
 
         self.setCentralWidget(tabs)
+        logger.debug("MainWindow initialized")
 
-
-# ----------------- App Entry -----------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     mw = MainWindow()
     mw.show()
+    logger.debug("Application started")
     sys.exit(app.exec())
